@@ -29,6 +29,5 @@ func init() {
 		branchCommand,
 		listSessionsCommand,
 		saveSessionCommand,
-		listFilesCommand,
-		commitCommand)
+		listFilesCommand)
 }

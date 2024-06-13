@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"golang.design/x/clipboard"
@@ -14,7 +15,7 @@ import (
 var listFilesCommand = &cobra.Command{
 	Use:   "fl",
 	Short: "List files",
-	Long:  "List modified files and (un)stage.",
+	Long:  "List (un)stage and commit files.",
 	Run: func(cmd *cobra.Command, args []string) {
 		path, err := exec.LookPath("git")
 		if err != nil {
@@ -25,6 +26,7 @@ var listFilesCommand = &cobra.Command{
 		m := listFilesModel{
 			choices: []string{},
 			cursor:  0,
+			commit:  false,
 			staged:  map[string]bool{},
 		}
 
@@ -60,9 +62,49 @@ var listFilesCommand = &cobra.Command{
 		}
 
 		p := tea.NewProgram(m)
-		if _, err := p.Run(); err != nil {
+
+		result, err := p.Run()
+		if err != nil {
 			fmt.Println("Error: ", err)
 			os.Exit(1)
+		}
+
+		if m, ok := result.(listFilesModel); ok && m.commit {
+			if len(m.staged) == 0 {
+				fmt.Println("Nothing to commit")
+				os.Exit(1)
+			}
+
+			str := ""
+			for file, _ := range m.staged {
+				str += file + "\n"
+			}
+			clipboard.Write(clipboard.FmtText, []byte(str))
+
+			p := tea.NewProgram(createInputModel())
+			result, err := p.Run()
+			if err != nil {
+				fmt.Println("Error: ", err)
+				os.Exit(1)
+			}
+
+			if m, ok := result.(inputModel); ok {
+				str := m.textInput.Value()
+				if str == "" {
+					fmt.Println("Commit message is empty")
+					os.Exit(1)
+				}
+
+				if err := run("commit", "-m", str); err != nil {
+					fmt.Println("Error: ", err)
+					os.Exit(1)
+				}
+
+				if err := run("push"); err != nil {
+					fmt.Println("Error: ", err)
+					os.Exit(1)
+				}
+			}
 		}
 	},
 }
@@ -70,6 +112,7 @@ var listFilesCommand = &cobra.Command{
 type listFilesModel struct {
 	choices []string
 	cursor  int
+	commit  bool
 	staged  map[string]bool
 }
 
@@ -120,13 +163,8 @@ func (m listFilesModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "c":
-			{
-				str := ""
-				for file, _ := range m.staged {
-					str += file + "\n"
-				}
-				clipboard.Write(clipboard.FmtText, []byte(str))
-			}
+			m.commit = true
+			return m, tea.Quit
 		}
 	}
 
@@ -150,9 +188,61 @@ func (m listFilesModel) View() string {
 		s += fmt.Sprintf("%s %s %s\n", cursor, staged, choice)
 	}
 
-	s += "\nPress q to quit.\n"
+	s += "\nPress q to quit, c to commit changes.\n"
 
 	return s
+}
+
+type errMsg error
+
+type inputModel struct {
+	textInput textinput.Model
+	err       error
+}
+
+func createInputModel() inputModel {
+	ti := textinput.New()
+	ti.Placeholder = "initial commit"
+	ti.Focus()
+	ti.CharLimit = 156
+	ti.Width = 20
+
+	return inputModel{
+		textInput: ti,
+		err:       nil,
+	}
+}
+
+func (m inputModel) Init() tea.Cmd {
+	return textinput.Blink
+}
+
+func (m inputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.Type {
+		case tea.KeyEnter, tea.KeyCtrlC, tea.KeyEsc:
+			return m, tea.Quit
+		}
+
+	// We handle errors just like any other message
+	case errMsg:
+		m.err = msg
+		return m, nil
+	}
+
+	m.textInput, cmd = m.textInput.Update(msg)
+	return m, cmd
+}
+
+func (m inputModel) View() string {
+	return fmt.Sprintf(
+		"Commit message:\n\n%s\n\n%s",
+		m.textInput.View(),
+		"(esc to quit)",
+	) + "\n"
 }
 
 func run(args ...string) error {
